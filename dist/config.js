@@ -16,5 +16,6 @@ exports.config = {
     jwtSecret: process.env.JWT_SECRET || 'dev_secret_key_change_in_production',
     adminPassword: process.env.ADMIN_PASSWORD || 'admin123',
     clientUrl: process.env.CLIENT_URL || 'http://localhost:5173',
-    uploadsDir: process.env.UPLOADS_DIR || path_1.default.join(__dirname, '..', 'uploads'),
+    uploadsDir: process.env.UPLOADS_DIR ||
+        (process.env.VERCEL ? '/tmp/uploads' : path_1.default.join(__dirname, '..', 'uploads')),
 };

@@ -34,7 +34,16 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static uploaded covers / assets safely
 app.use('/uploads', express.static(config.uploadsDir));
 
-// Health check
+// Health & root check
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Razorpay Selling Backend API is running',
+    version: '1.0.0',
+    time: new Date(),
+  });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', time: new Date() });
 });
@@ -76,9 +85,11 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
 import { seedInitialProduct } from './seed';
 
-app.listen(config.port, async () => {
-  console.log(`🚀 Razorpay Selling Server running on http://localhost:${config.port}`);
-  await seedInitialProduct();
-});
+if (process.env.VERCEL !== '1' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
+  app.listen(config.port, async () => {
+    console.log(`🚀 Razorpay Selling Server running on http://localhost:${config.port}`);
+    await seedInitialProduct();
+  });
+}
 
 export default app;
