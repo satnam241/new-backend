@@ -1,0 +1,53 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Product {
+  id            String   @id @default(uuid())
+  title         String
+  slug          String   @unique
+  description   String
+  price         Int      // in INR
+  originalPrice Int?     // for discount display (e.g. crossed-out 999)
+  coverImage    String?  // URL or filename
+  driveUrl      String?  // Google Drive folder/file URL
+  filePath      String?  // Path to stored PDF / asset
+  fileName      String?  // Original filename
+  fileSize      Int?     // bytes
+  mimeType      String   @default("application/pdf")
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  orders        Order[]
+}
+
+model Order {
+  id                String    @id @default(uuid())
+  productId         String
+  product           Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  customerName      String    @default("Customer")
+  amount            Int       // in INR
+  currency          String    @default("INR")
+  razorpayOrderId   String    @unique
+  razorpayPaymentId String?   @unique
+  razorpaySignature String?
+  status            String    @default("PENDING") // PENDING, PAID, FAILED
+  deviceToken       String?   // Secret authorization token bound to device
+  deviceFingerprint String?   // Hash of device UA + screen / client signature
+  ipAddress         String?
+  userAgent         String?
+  downloadCount     Int       @default(0)
+  maxDownloads      Int       @default(10)
+  isAccessRevoked   Boolean   @default(false)
+  paidAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([razorpayOrderId])
+  @@index([deviceToken])
+}
