@@ -26,6 +26,7 @@ export const createRazorpayOrder = async (params: CreateOrderParams) => {
     amount: Math.round(params.amount * 100),
     currency: params.currency || 'INR',
     receipt: params.receipt,
+    payment_capture: 1, // Auto-capture payments immediately upon successful transaction
     notes: params.notes || {},
   };
 
@@ -35,6 +36,36 @@ export const createRazorpayOrder = async (params: CreateOrderParams) => {
   } catch (error: any) {
     console.error('[Razorpay Order Creation Failed]:', error);
     throw new Error(error?.error?.description || error.message || 'Failed to create Razorpay order');
+  }
+};
+
+export const fetchRazorpayOrderPayments = async (razorpayOrderId: string) => {
+  try {
+    const instance = getRazorpayInstance();
+    const payments = await instance.orders.fetchPayments(razorpayOrderId);
+    return payments?.items || [];
+  } catch (error: any) {
+    console.error(`[Razorpay fetch payments failed for ${razorpayOrderId}]:`, error);
+    return [];
+  }
+};
+
+export const captureRazorpayPaymentIfNeeded = async (
+  paymentId: string,
+  amountInPaise: number
+) => {
+  try {
+    const instance = getRazorpayInstance();
+    const payment = await instance.payments.fetch(paymentId);
+    if (payment && payment.status === 'authorized') {
+      console.log(`[Razorpay]: Payment ${paymentId} is authorized. Auto-capturing ${amountInPaise} paise now...`);
+      const captured = await instance.payments.capture(paymentId, amountInPaise, 'INR');
+      return captured;
+    }
+    return payment;
+  } catch (err: any) {
+    console.warn(`[Razorpay capture check notice for ${paymentId}]:`, err?.message || err);
+    return null;
   }
 };
 

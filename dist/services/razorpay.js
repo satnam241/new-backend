@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.verifyWebhookSignature = exports.verifyRazorpaySignature = exports.createRazorpayOrder = exports.getRazorpayInstance = void 0;
+exports.verifyWebhookSignature = exports.verifyRazorpaySignature = exports.captureRazorpayPaymentIfNeeded = exports.fetchRazorpayOrderPayments = exports.createRazorpayOrder = exports.getRazorpayInstance = void 0;
 const razorpay_1 = __importDefault(require("razorpay"));
 const crypto_1 = __importDefault(require("crypto"));
 const config_1 = require("../config");
@@ -24,6 +24,7 @@ const createRazorpayOrder = async (params) => {
         amount: Math.round(params.amount * 100),
         currency: params.currency || 'INR',
         receipt: params.receipt,
+        payment_capture: 1, // Auto-capture payments immediately upon successful transaction
         notes: params.notes || {},
     };
     try {
@@ -36,6 +37,35 @@ const createRazorpayOrder = async (params) => {
     }
 };
 exports.createRazorpayOrder = createRazorpayOrder;
+const fetchRazorpayOrderPayments = async (razorpayOrderId) => {
+    try {
+        const instance = (0, exports.getRazorpayInstance)();
+        const payments = await instance.orders.fetchPayments(razorpayOrderId);
+        return payments?.items || [];
+    }
+    catch (error) {
+        console.error(`[Razorpay fetch payments failed for ${razorpayOrderId}]:`, error);
+        return [];
+    }
+};
+exports.fetchRazorpayOrderPayments = fetchRazorpayOrderPayments;
+const captureRazorpayPaymentIfNeeded = async (paymentId, amountInPaise) => {
+    try {
+        const instance = (0, exports.getRazorpayInstance)();
+        const payment = await instance.payments.fetch(paymentId);
+        if (payment && payment.status === 'authorized') {
+            console.log(`[Razorpay]: Payment ${paymentId} is authorized. Auto-capturing ${amountInPaise} paise now...`);
+            const captured = await instance.payments.capture(paymentId, amountInPaise, 'INR');
+            return captured;
+        }
+        return payment;
+    }
+    catch (err) {
+        console.warn(`[Razorpay capture check notice for ${paymentId}]:`, err?.message || err);
+        return null;
+    }
+};
+exports.captureRazorpayPaymentIfNeeded = captureRazorpayPaymentIfNeeded;
 const verifyRazorpaySignature = (razorpayOrderId, razorpayPaymentId, razorpaySignature) => {
     if (!config_1.config.razorpayKeySecret ||
         config_1.config.razorpayKeySecret.includes('placeholder') ||

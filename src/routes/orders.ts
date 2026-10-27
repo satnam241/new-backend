@@ -3,6 +3,8 @@ import { prisma } from '../prisma';
 import {
   createRazorpayOrder,
   verifyRazorpaySignature,
+  captureRazorpayPaymentIfNeeded,
+  fetchRazorpayOrderPayments,
 } from '../services/razorpay';
 import {
   deviceAuthMiddleware,
@@ -155,6 +157,16 @@ router.post('/verify', async (req, res) => {
     const fingerprint = generateDeviceFingerprint(req, clientFingerprint);
     const deviceToken = createDeviceToken(order.id, fingerprint);
 
+    // Ensure payment is captured on Razorpay
+    if (
+      !razorpayOrderId.startsWith('order_mock_') &&
+      !razorpayOrderId.startsWith('order_test_') &&
+      razorpayPaymentId &&
+      !razorpayPaymentId.startsWith('pay_test_')
+    ) {
+      await captureRazorpayPaymentIfNeeded(razorpayPaymentId, Math.round(order.amount * 100));
+    }
+
     // Update order with paid status and lock to this device
     const updatedOrder = await prisma.order.update({
       where: { id: order.id },
@@ -177,6 +189,102 @@ router.post('/verify', async (req, res) => {
   } catch (error: any) {
     console.error('[Verify Order Error]:', error);
     res.status(500).json({ success: false, message: error.message || 'Payment verification failed' });
+  }
+});
+
+// 2.5 Check Order Payment Status (Auto-verification & recovery for UPI / redirects)
+router.get('/status/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const clientFingerprint = (req.headers['x-device-fingerprint'] as string) || '';
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { product: true },
+    });
+
+    if (!order) {
+      res.status(404).json({ success: false, message: 'Order not found' });
+      return;
+    }
+
+    if (order.status === 'PAID') {
+      res.json({
+        success: true,
+        status: 'PAID',
+        orderId: order.id,
+        deviceToken: order.deviceToken,
+      });
+      return;
+    }
+
+    // If order is still PENDING and has a real Razorpay Order ID, check with Razorpay API
+    if (
+      order.status === 'PENDING' &&
+      order.razorpayOrderId &&
+      !order.razorpayOrderId.startsWith('order_mock_') &&
+      !order.razorpayOrderId.startsWith('order_test_')
+    ) {
+      const payments = await fetchRazorpayOrderPayments(order.razorpayOrderId);
+
+      // Look for any successful or authorized payment
+      const successfulPayment = payments.find(
+        (p: any) => p.status === 'captured' || p.status === 'authorized'
+      );
+
+      if (successfulPayment) {
+        if (successfulPayment.status === 'authorized') {
+          await captureRazorpayPaymentIfNeeded(
+            successfulPayment.id,
+            Math.round(order.amount * 100)
+          );
+        }
+
+        const fingerprint = generateDeviceFingerprint(req, clientFingerprint);
+        const deviceToken = order.deviceToken || createDeviceToken(order.id, fingerprint);
+
+        const updatedOrder = await prisma.order.update({
+          where: { id: order.id },
+          data: {
+            status: 'PAID',
+            razorpayPaymentId: successfulPayment.id,
+            deviceToken,
+            deviceFingerprint: fingerprint,
+            paidAt: new Date(),
+          },
+        });
+
+        res.json({
+          success: true,
+          status: 'PAID',
+          orderId: updatedOrder.id,
+          deviceToken,
+          message: 'Payment verified successfully from Razorpay',
+        });
+        return;
+      }
+
+      // Check if there are any failed payments
+      const failedPayment = payments.find((p: any) => p.status === 'failed');
+      if (failedPayment) {
+        res.json({
+          success: false,
+          status: 'FAILED',
+          message: failedPayment.error_description || 'Payment was unsuccessful or blocked by Razorpay.',
+          errorReason: failedPayment.error_reason,
+        });
+        return;
+      }
+    }
+
+    res.json({
+      success: true,
+      status: order.status,
+      orderId: order.id,
+    });
+  } catch (error: any) {
+    console.error('[Check Order Status Error]:', error);
+    res.status(500).json({ success: false, message: error.message || 'Error checking order status' });
   }
 });
 

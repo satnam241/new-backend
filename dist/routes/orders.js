@@ -124,6 +124,13 @@ router.post('/verify', async (req, res) => {
         // Payment Verified! Generate Device Authorization
         const fingerprint = (0, deviceAuth_1.generateDeviceFingerprint)(req, clientFingerprint);
         const deviceToken = (0, deviceAuth_1.createDeviceToken)(order.id, fingerprint);
+        // Ensure payment is captured on Razorpay
+        if (!razorpayOrderId.startsWith('order_mock_') &&
+            !razorpayOrderId.startsWith('order_test_') &&
+            razorpayPaymentId &&
+            !razorpayPaymentId.startsWith('pay_test_')) {
+            await (0, razorpay_1.captureRazorpayPaymentIfNeeded)(razorpayPaymentId, Math.round(order.amount * 100));
+        }
         // Update order with paid status and lock to this device
         const updatedOrder = await prisma_1.prisma.order.update({
             where: { id: order.id },
@@ -146,6 +153,84 @@ router.post('/verify', async (req, res) => {
     catch (error) {
         console.error('[Verify Order Error]:', error);
         res.status(500).json({ success: false, message: error.message || 'Payment verification failed' });
+    }
+});
+// 2.5 Check Order Payment Status (Auto-verification & recovery for UPI / redirects)
+router.get('/status/:orderId', async (req, res) => {
+    try {
+        const { orderId } = req.params;
+        const clientFingerprint = req.headers['x-device-fingerprint'] || '';
+        const order = await prisma_1.prisma.order.findUnique({
+            where: { id: orderId },
+            include: { product: true },
+        });
+        if (!order) {
+            res.status(404).json({ success: false, message: 'Order not found' });
+            return;
+        }
+        if (order.status === 'PAID') {
+            res.json({
+                success: true,
+                status: 'PAID',
+                orderId: order.id,
+                deviceToken: order.deviceToken,
+            });
+            return;
+        }
+        // If order is still PENDING and has a real Razorpay Order ID, check with Razorpay API
+        if (order.status === 'PENDING' &&
+            order.razorpayOrderId &&
+            !order.razorpayOrderId.startsWith('order_mock_') &&
+            !order.razorpayOrderId.startsWith('order_test_')) {
+            const payments = await (0, razorpay_1.fetchRazorpayOrderPayments)(order.razorpayOrderId);
+            // Look for any successful or authorized payment
+            const successfulPayment = payments.find((p) => p.status === 'captured' || p.status === 'authorized');
+            if (successfulPayment) {
+                if (successfulPayment.status === 'authorized') {
+                    await (0, razorpay_1.captureRazorpayPaymentIfNeeded)(successfulPayment.id, Math.round(order.amount * 100));
+                }
+                const fingerprint = (0, deviceAuth_1.generateDeviceFingerprint)(req, clientFingerprint);
+                const deviceToken = order.deviceToken || (0, deviceAuth_1.createDeviceToken)(order.id, fingerprint);
+                const updatedOrder = await prisma_1.prisma.order.update({
+                    where: { id: order.id },
+                    data: {
+                        status: 'PAID',
+                        razorpayPaymentId: successfulPayment.id,
+                        deviceToken,
+                        deviceFingerprint: fingerprint,
+                        paidAt: new Date(),
+                    },
+                });
+                res.json({
+                    success: true,
+                    status: 'PAID',
+                    orderId: updatedOrder.id,
+                    deviceToken,
+                    message: 'Payment verified successfully from Razorpay',
+                });
+                return;
+            }
+            // Check if there are any failed payments
+            const failedPayment = payments.find((p) => p.status === 'failed');
+            if (failedPayment) {
+                res.json({
+                    success: false,
+                    status: 'FAILED',
+                    message: failedPayment.error_description || 'Payment was unsuccessful or blocked by Razorpay.',
+                    errorReason: failedPayment.error_reason,
+                });
+                return;
+            }
+        }
+        res.json({
+            success: true,
+            status: order.status,
+            orderId: order.id,
+        });
+    }
+    catch (error) {
+        console.error('[Check Order Status Error]:', error);
+        res.status(500).json({ success: false, message: error.message || 'Error checking order status' });
     }
 });
 // 3. Get Access Details (Device Authorized)
